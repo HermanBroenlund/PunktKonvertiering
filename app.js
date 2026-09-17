@@ -4,7 +4,6 @@ const $ = (id) => document.getElementById(id);
 
 const eastingInput = $('easting');
 const northingInput = $('northing');
-const zoneInput = $('utmZone');
 const convertBtn = $('convertBtn');
 const locateBtn = $('locateBtn');
 const locatePanelBtn = $('locatePanelBtn');
@@ -15,6 +14,7 @@ const epsgResult = $('epsgResult');
 const sourceBadge = $('sourceBadge');
 const accuracyRow = $('accuracyRow');
 const statusEl = $('status');
+const zoneModeSelect = $('zoneMode');
 
 const excelFileInput = $('excelFile');
 const excelBadge = $('excelBadge');
@@ -35,6 +35,20 @@ const excelPreview = $('excelPreview');
 const NORWAY_ZONES = [32, 33, 35];
 const KARTVERKET_POINT_API = 'https://api.kartverket.no/kommuneinfo/v1/punkt';
 let lastResolvedZone = 33;
+
+function selectedZoneOverride() {
+  const value = zoneModeSelect?.value ?? 'auto';
+  if (value === 'auto') return null;
+  const zone = Number.parseInt(value, 10);
+  return NORWAY_ZONES.includes(zone) ? zone : null;
+}
+
+function zoneAreaLabel(zone) {
+  if (zone === 32) return 'Sør-Norge og Trøndelag';
+  if (zone === 33) return 'Nordland og Troms';
+  if (zone === 35) return 'Finnmark';
+  return `UTM ${zone}N`;
+}
 const OUTPUT_HEADERS = {
   lat: 'WGS84_Latitude',
   lon: 'WGS84_Longitude',
@@ -89,11 +103,6 @@ L.control.layers(
 
 L.control.scale({ metric: true, imperial: false }).addTo(map);
 
-function selectedManualZone() {
-  const zone = Number.parseInt(zoneInput.value, 10);
-  return NORWAY_ZONES.includes(zone) ? zone : null;
-}
-
 function zoneFromCountyName(name) {
   const county = normalizeHeader(name);
   if (county.includes('finnmark')) return 35;
@@ -138,11 +147,6 @@ async function resolveZoneForPosition(lat, lon, forcedZone = null) {
     return { zone: forcedZone, automatic: false, admin: null, fallback: false };
   }
 
-  const manualZone = selectedManualZone();
-  if (manualZone) {
-    return { zone: manualZone, automatic: false, admin: null, fallback: false };
-  }
-
   try {
     const admin = await fetchAdministrativeArea(lat, lon);
     const zone = zoneFromCountyName(admin?.fylkesnavn);
@@ -157,6 +161,47 @@ async function resolveZoneForPosition(lat, lon, forcedZone = null) {
     admin: null,
     fallback: true
   };
+}
+
+async function detectZoneFromEN(easting, northing, preferredZone = null) {
+  const order = preferredZone && NORWAY_ZONES.includes(preferredZone)
+    ? [preferredZone, ...NORWAY_ZONES.filter((zone) => zone !== preferredZone)]
+    : [...NORWAY_ZONES];
+
+  const candidates = [];
+  let apiWorked = false;
+
+  for (const zone of order) {
+    try {
+      const point = utmToWgs(easting, northing, zone);
+      if (!Number.isFinite(point.lat) || !Number.isFinite(point.lon)) continue;
+      if (point.lat < 57 || point.lat > 72.5 || point.lon < 3 || point.lon > 33.5) continue;
+
+      try {
+        const admin = await fetchAdministrativeArea(point.lat, point.lon);
+        apiWorked = true;
+        const expectedZone = zoneFromCountyName(admin?.fylkesnavn);
+        if (expectedZone === zone) {
+          candidates.push({ zone, ...point, admin, validated: true });
+          if (zone === preferredZone) return candidates[0];
+        }
+      } catch (error) {
+        console.warn(`Sonevalidering feilet for ${zone}N`, error);
+      }
+    } catch (error) {
+      console.warn(`Kunne ikke teste UTM ${zone}N`, error);
+    }
+  }
+
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length > 1) {
+    throw new Error('Flere norske UTM-soner gir mulige treff.');
+  }
+
+  if (!apiWorked) {
+    throw new Error('Kartverket kunne ikke nås for automatisk sonevalg.');
+  }
+  throw new Error('Fant ikke en entydig norsk UTM-sone for koordinatet.');
 }
 
 function parseNumber(value) {
@@ -237,9 +282,10 @@ async function setPosition(lat, lon, source = 'Kart', options = {}) {
     return;
   }
 
-  setStatus(selectedManualZone() ? 'Oppdaterer koordinater…' : 'Finner riktig norsk UTM-sone…');
+  const requestedZone = options.forceZone ?? selectedZoneOverride();
+  setStatus(requestedZone ? `Bruker ${zoneAreaLabel(requestedZone)} / UTM ${requestedZone}N…` : 'Finner riktig norsk UTM-sone…');
 
-  const zoneInfo = await resolveZoneForPosition(lat, lon, options.forceZone ?? null);
+  const zoneInfo = await resolveZoneForPosition(lat, lon, requestedZone);
   const zone = zoneInfo.zone;
   lastResolvedZone = zone;
   const utm = wgsToUtm(lat, lon, zone);
@@ -295,37 +341,52 @@ async function setPosition(lat, lon, source = 'Kart', options = {}) {
   } else if (zoneInfo.automatic && zoneInfo.fallback) {
     setStatus(`UTM ${zone}N ble valgt automatisk ut fra posisjonen.`, 'ok');
   } else {
-    setStatus('Koordinatene er oppdatert.', 'ok');
+    setStatus(`${zoneAreaLabel(zone)} / UTM ${zone}N er valgt manuelt.`, 'ok');
   }
 }
 
-function convertSinglePoint() {
+async function convertSinglePoint() {
   const easting = parseNumber(eastingInput.value);
   const northing = parseNumber(northingInput.value);
-  const zone = selectedManualZone();
 
   if (!Number.isFinite(easting) || !Number.isFinite(northing)) {
     setStatus('Skriv inn gyldige tall for E og N.', 'error');
     return;
   }
 
-  if (!zone) {
-    setStatus('For E/N må du bare velge hvilket område punktet ligger i: Sør-Norge/Trøndelag, Nordland/Troms eller Finnmark. Selve E/N-tallene inneholder ikke sonen.', 'error');
-    zoneInput.focus();
-    return;
-  }
-
   if (easting < 10000 || easting > 1000000 || northing < 0 || northing > 10000000) {
-    setStatus('E/N-verdiene ser uvanlige ut. Kontroller koordinatene og valgt område.', 'error');
+    setStatus('E/N-verdiene ser uvanlige ut. Kontroller koordinatene.', 'error');
     return;
   }
 
   try {
-    const { lat, lon } = utmToWgs(easting, northing, zone);
-    setPosition(lat, lon, 'E/N-konvertering', { forceZone: zone });
+    convertBtn.disabled = true;
+    const forcedZone = selectedZoneOverride();
+
+    if (forcedZone) {
+      convertBtn.textContent = 'Konverterer…';
+      setStatus(`Bruker ${zoneAreaLabel(forcedZone)} / UTM ${forcedZone}N…`);
+      const point = utmToWgs(easting, northing, forcedZone);
+      lastResolvedZone = forcedZone;
+      await setPosition(point.lat, point.lon, 'E/N-konvertering', { forceZone: forcedZone });
+    } else {
+      convertBtn.textContent = 'Finner riktig UTM-sone…';
+      setStatus('Tester norske UTM-soner og validerer punktet mot Kartverket…');
+      const detected = await detectZoneFromEN(easting, northing, lastResolvedZone);
+      lastResolvedZone = detected.zone;
+      await setPosition(detected.lat, detected.lon, 'E/N-konvertering', { forceZone: detected.zone });
+      setStatus(`UTM ${detected.zone}N ble funnet automatisk${detected.admin?.fylkesnavn ? ` (${detected.admin.fylkesnavn})` : ''}.`, 'ok');
+    }
   } catch (error) {
     console.error(error);
-    setStatus('Kunne ikke konvertere koordinatene. Kontroller E, N og valgt område.', 'error');
+    if (selectedZoneOverride()) {
+      setStatus('Kunne ikke konvertere koordinatet med valgt UTM-område. Kontroller E/N og områdevalget.', 'error');
+    } else {
+      setStatus('Kunne ikke bestemme UTM-sone automatisk. Kontroller at E/N er norske koordinater og at du har nettilgang.', 'error');
+    }
+  } finally {
+    convertBtn.disabled = false;
+    convertBtn.textContent = 'Konverter og vis i kart';
   }
 }
 
@@ -334,15 +395,6 @@ convertBtn.addEventListener('click', convertSinglePoint);
   element.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') convertSinglePoint();
   });
-});
-
-zoneInput.addEventListener('change', async () => {
-  // Dersom en WGS84-posisjon allerede finnes, regn den om. I automatisk modus
-  // slås riktig norsk sone opp på nytt fra posisjonen.
-  const match = wgsResult.textContent.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
-  if (match) {
-    await setPosition(Number(match[1]), Number(match[2]), 'Valgt posisjon', { zoom: false });
-  }
 });
 
 function setLocateButtonsLoading(loading) {
@@ -412,6 +464,15 @@ function locateDevice() {
 
 locateBtn.addEventListener('click', locateDevice);
 locatePanelBtn.addEventListener('click', locateDevice);
+
+zoneModeSelect?.addEventListener('change', () => {
+  const zone = selectedZoneOverride();
+  if (zone) {
+    setStatus(`${zoneAreaLabel(zone)} / UTM ${zone}N er valgt som manuell overstyring.`, 'ok');
+  } else {
+    setStatus('Automatisk UTM-valg er aktivt. GPS, kartklikk og E/N kan finne riktig sone for deg.', 'ok');
+  }
+});
 
 map.on('click', async (event) => {
   await setPosition(event.latlng.lat, event.latlng.lng, 'Kartklikk', { zoom: false });
@@ -513,8 +574,8 @@ function populateColumnSelect(select, columns, includeDefaultZone = false) {
 
   if (includeDefaultZone) {
     const option = document.createElement('option');
-    option.value = '__selected_zone__';
-    option.textContent = 'Bruk området valgt på siden';
+    option.value = '__auto_zone__';
+    option.textContent = 'Ingen sonekolonne – bruk UTM-valget øverst';
     select.appendChild(option);
   }
 
@@ -534,7 +595,7 @@ function autoSelectColumns(meta) {
   if (east) eastColumnSelect.value = String(east.index);
   if (north) northColumnSelect.value = String(north.index);
   if (zone) zoneColumnSelect.value = String(zone.index);
-  else zoneColumnSelect.value = '__selected_zone__';
+  else zoneColumnSelect.value = '__auto_zone__';
 }
 
 function refreshSheetMapping() {
@@ -632,7 +693,7 @@ function isBlankCoordinatePair(eRaw, nRaw) {
   return String(eRaw ?? '').trim() === '' && String(nRaw ?? '').trim() === '';
 }
 
-function processExcel() {
+async function processExcel() {
   if (!workbook || !activeSheetMeta) {
     setExcelStatus('Velg en Excel-fil først.', 'error');
     return;
@@ -641,12 +702,6 @@ function processExcel() {
   const eastCol = Number.parseInt(eastColumnSelect.value, 10);
   const northCol = Number.parseInt(northColumnSelect.value, 10);
   const zoneSetting = zoneColumnSelect.value;
-
-  if (zoneSetting === '__selected_zone__' && !selectedManualZone()) {
-    setExcelStatus('Excel med E/N trenger et område når arket ikke har en sonekolonne. Velg Sør-Norge/Trøndelag, Nordland/Troms eller Finnmark øverst på siden.', 'error');
-    zoneInput.focus();
-    return;
-  }
 
   if (!Number.isInteger(eastCol) || !Number.isInteger(northCol)) {
     setExcelStatus('Velg hvilke kolonner som inneholder E og N.', 'error');
@@ -668,14 +723,23 @@ function processExcel() {
   processedRows = [];
   excelProcessed = false;
   excelLayer.clearLayers();
+  processExcelBtn.disabled = true;
+  downloadExcelBtn.disabled = true;
 
   let converted = 0;
   let errors = 0;
   let skipped = 0;
+  let zoneHint = lastResolvedZone;
+  const totalRows = Math.max(0, meta.range.e.r - meta.headerRow);
 
   for (let row = meta.headerRow + 1; row <= meta.range.e.r; row += 1) {
     const eRaw = cellValue(meta.sheet, row, eastCol);
     const nRaw = cellValue(meta.sheet, row, northCol);
+
+    if ((row - meta.headerRow) % 10 === 0 || row === meta.headerRow + 1) {
+      setExcelStatus(`Behandler rad ${row - meta.headerRow} av ${totalRows}…`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
 
     if (isBlankCoordinatePair(eRaw, nRaw)) {
       skipped += 1;
@@ -688,48 +752,46 @@ function processExcel() {
 
     const easting = parseNumber(eRaw);
     const northing = parseNumber(nRaw);
-    let zone = selectedManualZone();
-
-    if (zoneSetting !== '__selected_zone__') {
-      zone = Number.parseInt(cellValue(meta.sheet, row, Number.parseInt(zoneSetting, 10)), 10);
-    }
-
+    let zone = null;
     let resultStatus = 'OK';
     let lat = '';
     let lon = '';
 
     if (!Number.isFinite(easting) || !Number.isFinite(northing)) {
       resultStatus = 'Feil: E eller N er ikke et gyldig tall';
-    } else if (!isNorwayZone(zone)) {
-      resultStatus = 'Feil: UTM-sone må være 32, 33 eller 35';
     } else if (easting < 10000 || easting > 1000000 || northing < 0 || northing > 10000000) {
       resultStatus = 'Feil: E/N-verdiene er utenfor forventet UTM-område';
     } else {
       try {
-        const convertedPoint = utmToWgs(easting, northing, zone);
-        lat = Number(convertedPoint.lat.toFixed(7));
-        lon = Number(convertedPoint.lon.toFixed(7));
-
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-          throw new Error('Ugyldig resultat');
+        if (zoneSetting !== '__auto_zone__') {
+          zone = Number.parseInt(cellValue(meta.sheet, row, Number.parseInt(zoneSetting, 10)), 10);
+          if (!isNorwayZone(zone)) throw new Error('UTM-sone må være 32, 33 eller 35');
+          const convertedPoint = utmToWgs(easting, northing, zone);
+          lat = Number(convertedPoint.lat.toFixed(7));
+          lon = Number(convertedPoint.lon.toFixed(7));
+        } else {
+          const forcedZone = selectedZoneOverride();
+          if (forcedZone) {
+            zone = forcedZone;
+            const convertedPoint = utmToWgs(easting, northing, zone);
+            lat = Number(convertedPoint.lat.toFixed(7));
+            lon = Number(convertedPoint.lon.toFixed(7));
+          } else {
+            const detected = await detectZoneFromEN(easting, northing, zoneHint);
+            zone = detected.zone;
+            zoneHint = zone;
+            lastResolvedZone = zone;
+            lat = Number(detected.lat.toFixed(7));
+            lon = Number(detected.lon.toFixed(7));
+          }
         }
 
-        converted += 1;
-        processedRows.push({
-          excelRow: row + 1,
-          easting,
-          northing,
-          zone,
-          lat,
-          lon,
-          status: resultStatus
-        });
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw new Error('Ugyldig resultat');
 
-        L.circleMarker([lat, lon], {
-          radius: 5,
-          weight: 2,
-          fillOpacity: 0.72
-        })
+        converted += 1;
+        processedRows.push({ excelRow: row + 1, easting, northing, zone, lat, lon, status: resultStatus });
+
+        L.circleMarker([lat, lon], { radius: 5, weight: 2, fillOpacity: 0.72 })
           .bindPopup(
             `<strong>Excel-rad ${row + 1}</strong>` +
             `<br>WGS84: ${lat.toFixed(7)}, ${lon.toFixed(7)}` +
@@ -738,27 +800,28 @@ function processExcel() {
           .addTo(excelLayer);
       } catch (error) {
         console.error(`Feil på Excel-rad ${row + 1}`, error);
-        resultStatus = 'Feil: koordinatet kunne ikke konverteres';
+        resultStatus = zoneSetting === '__auto_zone__'
+          ? (selectedZoneOverride()
+              ? `Feil: kunne ikke konvertere med UTM ${selectedZoneOverride()}N`
+              : 'Feil: kunne ikke bestemme norsk UTM-sone automatisk')
+          : `Feil: ${error.message || 'koordinatet kunne ikke konverteres'}`;
       }
     }
 
     if (resultStatus !== 'OK') errors += 1;
-
     writeCell(meta.sheet, row, outputCols.lat, lat);
     writeCell(meta.sheet, row, outputCols.lon, lon);
-    writeCell(meta.sheet, row, outputCols.zone, isNorwayZone(zone) ? zone : String(zone ?? ''));
+    writeCell(meta.sheet, row, outputCols.zone, isNorwayZone(zone) ? zone : '');
     writeCell(meta.sheet, row, outputCols.status, resultStatus);
   }
 
   const endCol = Math.max(meta.range.e.c, ...Object.values(outputCols));
-  meta.sheet['!ref'] = XLSX.utils.encode_range({
-    s: meta.range.s,
-    e: { r: meta.range.e.r, c: endCol }
-  });
+  meta.sheet['!ref'] = XLSX.utils.encode_range({ s: meta.range.s, e: { r: meta.range.e.r, c: endCol } });
   meta.range.e.c = endCol;
 
   renderExcelPreview();
   excelProcessed = true;
+  processExcelBtn.disabled = false;
   downloadExcelBtn.disabled = false;
 
   if (processedRows.length) {
@@ -824,9 +887,6 @@ downloadExcelBtn.addEventListener('click', () => {
 const params = new URLSearchParams(window.location.search);
 const initialLat = Number(params.get('lat'));
 const initialLon = Number(params.get('lon'));
-const initialZone = Number.parseInt(params.get('zone'), 10);
-if (isNorwayZone(initialZone)) zoneInput.value = String(initialZone);
-else zoneInput.value = 'auto';
 if (Number.isFinite(initialLat) && Number.isFinite(initialLon)) {
   setPosition(initialLat, initialLon, 'Lenke');
 }

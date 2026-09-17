@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#454545" />
+  <meta name="description" content="AF Koordinatkart – konverter norske E/N-koordinater til WGS84, bruk mobilens posisjon og behandle Excel-filer direkte i nettleseren." />
+  <title>AF Koordinatkart – E/N ↔ WGS84</title>
+
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link rel="preconnect" href="https://cdn.sheetjs.com" />
+  <link rel="preconnect" href="https://v.imgi.no" />
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="af-logo" src="https://v.imgi.no/5skf6rq7ch" alt="AF" />
+      <div class="brand-text">
+        <h1>Koordinatkart</h1>
+        <p>Norske UTM-koordinater ↔ WGS84</p>
+      </div>
+    </div>
+
+    <button id="locateBtn" class="primary locate-button" type="button">
+      <span aria-hidden="true">◎</span>
+      <span>Min posisjon</span>
+    </button>
+  </header>
+
+  <main>
+    <section class="panel controls" aria-label="Koordinatverktøy">
+      <div class="card zone-card">
+        <div class="card-heading">
+          <div>
+            <span class="eyebrow">NORGE</span>
+            <h2>UTM-sone</h2>
+          </div>
+          <span class="badge">Nord</span>
+        </div>
+
+        <label class="zone-label" for="utmZone">
+          Norsk UTM-sone
+          <select id="utmZone">
+            <option value="32">Sone 32</option>
+            <option value="33" selected>Sone 33</option>
+            <option value="35">Sone 35</option>
+          </select>
+        </label>
+        <p class="hint">Siden er låst til de norske kartsonene 32, 33 og 35. Valgt sone brukes også når telefonens posisjon eller et kartklikk konverteres til E/N.</p>
+      </div>
+
+      <div class="card gps-card">
+        <div class="card-heading">
+          <div>
+            <span class="eyebrow">GPS</span>
+            <h2>Telefonens posisjon</h2>
+          </div>
+          <span id="gpsBadge" class="badge">Ikke hentet</span>
+        </div>
+        <p class="hint gps-hint">Henter posisjonen fra telefonen og viser den både som WGS84 og E/N i valgt norsk UTM-sone.</p>
+        <button id="locatePanelBtn" class="primary wide" type="button">◎ Hent posisjon fra telefon</button>
+      </div>
+
+      <div class="card">
+        <div class="card-heading">
+          <div>
+            <span class="eyebrow">ENKELTPUNKT</span>
+            <h2>E/N → WGS84</h2>
+          </div>
+        </div>
+
+        <div class="grid two input-grid">
+          <label>
+            Easting (E)
+            <input id="easting" inputmode="decimal" placeholder="f.eks. 586123,45" autocomplete="off" />
+          </label>
+          <label>
+            Northing (N)
+            <input id="northing" inputmode="decimal" placeholder="f.eks. 7812345,67" autocomplete="off" />
+          </label>
+        </div>
+
+        <button id="convertBtn" class="primary wide" type="button">Konverter og vis i kart</button>
+        <p class="hint">E/N tolkes som UTM-koordinater i sonen som er valgt øverst.</p>
+      </div>
+
+      <div class="card results">
+        <div class="card-heading">
+          <h2>Valgt posisjon</h2>
+          <span id="sourceBadge" class="badge">Ingen posisjon</span>
+        </div>
+
+        <div class="result-block">
+          <div>
+            <span class="label">WGS84</span>
+            <strong id="wgsResult">–</strong>
+          </div>
+          <button class="copy" type="button" data-copy="wgsResult">Kopier</button>
+        </div>
+
+        <div class="result-block">
+          <div>
+            <span class="label">E/N</span>
+            <strong id="utmResult">–</strong>
+          </div>
+          <button class="copy" type="button" data-copy="utmResult">Kopier</button>
+        </div>
+
+        <div class="result-block subtle">
+          <div>
+            <span class="label">Referansesystem</span>
+            <strong id="epsgResult">–</strong>
+          </div>
+        </div>
+
+        <p id="accuracyRow" class="accuracy" hidden></p>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="card excel-card">
+        <div class="card-heading">
+          <div>
+            <span class="eyebrow">EXCEL</span>
+            <h2>Konverter flere koordinater</h2>
+          </div>
+          <span id="excelBadge" class="badge">Ingen fil</span>
+        </div>
+
+        <p class="hint">Last opp en Excel-fil. Andre kolonner kan ligge i arket og beholdes i resultatfilen. Siden trenger bare å vite hvilke kolonner som inneholder E og N, og eventuelt UTM-sone.</p>
+
+        <label class="file-picker">
+          <span>Velg Excel-fil</span>
+          <input id="excelFile" type="file" accept=".xlsx,.xls,.xlsm,.csv" />
+        </label>
+
+        <div id="excelMapping" class="excel-mapping" hidden>
+          <div class="file-info">
+            <strong id="excelFileName">–</strong>
+            <span id="excelSheetInfo">–</span>
+          </div>
+
+          <label>
+            Ark
+            <select id="sheetSelect"></select>
+          </label>
+
+          <div class="grid two mapping-grid">
+            <label>
+              E-kolonne
+              <select id="eastColumn"></select>
+            </label>
+            <label>
+              N-kolonne
+              <select id="northColumn"></select>
+            </label>
+          </div>
+
+          <label>
+            UTM-sone i Excel
+            <select id="zoneColumn"></select>
+          </label>
+          <p class="hint">Hvis arket ikke har en sonekolonne, velg «Bruk sone valgt på siden». Hvis arket har sone per rad, godtas bare 32, 33 og 35.</p>
+
+          <div class="excel-actions">
+            <button id="processExcelBtn" class="primary" type="button">Konverter Excel</button>
+            <button id="downloadExcelBtn" class="secondary" type="button" disabled>Last ned resultat</button>
+          </div>
+
+          <p id="excelStatus" class="status" role="status" aria-live="polite"></p>
+
+          <div id="previewWrap" class="preview-wrap" hidden>
+            <div class="preview-heading">
+              <strong>Forhåndsvisning</strong>
+              <span id="previewCount"></span>
+            </div>
+            <div class="table-scroll">
+              <table id="excelPreview"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="map-wrap" aria-label="Kart">
+      <div id="map"></div>
+      <div class="map-tip">Klikk i kartet for koordinater</div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Koordinater og Excel-filer behandles lokalt i nettleseren.</span>
+    <span>Telefonposisjon krever HTTPS og posisjonstillatelse.</span>
+  </footer>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script src="https://cdn.jsdelivr.net/npm/proj4@2.22.0/dist/proj4.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

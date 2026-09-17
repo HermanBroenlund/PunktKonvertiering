@@ -42,20 +42,21 @@
         <div class="card-heading">
           <div>
             <span class="eyebrow">NORGE</span>
-            <h2>UTM-sone</h2>
+            <h2>Område / UTM</h2>
           </div>
           <span class="badge">Nord</span>
         </div>
 
         <label class="zone-label" for="utmZone">
-          Norsk UTM-sone
+          Område for manuelle E/N-koordinater
           <select id="utmZone">
-            <option value="32">Sone 32</option>
-            <option value="33" selected>Sone 33</option>
-            <option value="35">Sone 35</option>
+            <option value="auto" selected>Automatisk – GPS og kart</option>
+            <option value="32">Sør-Norge og Trøndelag</option>
+            <option value="33">Nordland og Troms</option>
+            <option value="35">Finnmark</option>
           </select>
         </label>
-        <p class="hint">Siden er låst til de norske kartsonene 32, 33 og 35. Valgt sone brukes også når telefonens posisjon eller et kartklikk konverteres til E/N.</p>
+        <p class="hint">Ved GPS-posisjon og kartklikk finner siden riktig norsk UTM-sone automatisk. For E/N som du skriver inn selv, velger du bare hvilket område punktet ligger i – du trenger ikke kunne sonenummeret.</p>
       </div>
 
       <div class="card gps-card">
@@ -66,7 +67,7 @@
           </div>
           <span id="gpsBadge" class="badge">Ikke hentet</span>
         </div>
-        <p class="hint gps-hint">Henter posisjonen fra telefonen og viser den både som WGS84 og E/N i valgt norsk UTM-sone.</p>
+        <p class="hint gps-hint">Henter posisjonen fra telefonen, finner riktig norsk UTM-sone automatisk og viser både WGS84 og E/N.</p>
         <button id="locatePanelBtn" class="primary wide" type="button">◎ Hent posisjon fra telefon</button>
       </div>
 
@@ -90,7 +91,7 @@
         </div>
 
         <button id="convertBtn" class="primary wide" type="button">Konverter og vis i kart</button>
-        <p class="hint">E/N tolkes som UTM-koordinater i sonen som er valgt øverst.</p>
+        <p class="hint">For manuelle E/N-koordinater velger du bare område øverst. GPS og kartklikk trenger ikke noe manuelt valg.</p>
       </div>
 
       <div class="card results">
@@ -168,7 +169,7 @@
             UTM-sone i Excel
             <select id="zoneColumn"></select>
           </label>
-          <p class="hint">Hvis arket ikke har en sonekolonne, velg «Bruk sone valgt på siden». Hvis arket har sone per rad, godtas bare 32, 33 og 35.</p>
+          <p class="hint">Hvis arket har en sonekolonne, kan den brukes direkte. Hvis ikke, velger du bare området øverst på siden. E/N-tall alene kan ikke alltid avsløre hvilken UTM-sone de tilhører.</p>
 
           <div class="excel-actions">
             <button id="processExcelBtn" class="primary" type="button">Konverter Excel</button>

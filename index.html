@@ -9,7 +9,7 @@
 
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="preconnect" href="https://cdn.sheetjs.com" />
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
   <link rel="preconnect" href="https://v.imgi.no" />
 
   <link
@@ -18,7 +18,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=4" />
 </head>
 <body>
   <header class="topbar">
@@ -143,7 +143,7 @@
           <input id="excelFile" type="file" accept=".xlsx,.xls,.xlsm,.csv" />
         </label>
 
-        <div id="excelMapping" class="excel-mapping" hidden>
+        <div id="excelMapping" class="excel-mapping">
           <div class="file-info">
             <strong id="excelFileName">–</strong>
             <span id="excelSheetInfo">–</span>
@@ -172,11 +172,11 @@
           <p class="hint">Hvis arket har en sonekolonne, kan den brukes direkte. Hvis ikke, brukes UTM-valget øverst: «Automatisk» finner sone per rad, mens et valgt område brukes for alle radene.</p>
 
           <div class="excel-actions">
-            <button id="processExcelBtn" class="primary" type="button">Konverter Excel</button>
+            <button id="processExcelBtn" class="primary" type="button" disabled>Konverter Excel</button>
             <button id="downloadExcelBtn" class="secondary" type="button" disabled>Last ned resultat</button>
           </div>
 
-          <p id="excelStatus" class="status" role="status" aria-live="polite"></p>
+          <p id="excelStatus" class="status" role="status" aria-live="polite">Velg en Excel- eller CSV-fil for å starte.</p>
 
           <div id="previewWrap" class="preview-wrap" hidden>
             <div class="preview-heading">
@@ -208,7 +208,12 @@
     crossorigin=""
   ></script>
   <script src="https://cdn.jsdelivr.net/npm/proj4@2.22.0/dist/proj4.js"></script>
-  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script src="app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script>
+    if (typeof window.XLSX === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"><\/script>');
+    }
+  </script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

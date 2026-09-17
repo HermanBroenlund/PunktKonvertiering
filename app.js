@@ -498,16 +498,39 @@ document.querySelectorAll('[data-copy]').forEach((button) => {
 
 /* --------------------------- Excel --------------------------- */
 
+function excelLibraryReady() {
+  return typeof window.XLSX !== 'undefined' && window.XLSX?.read && window.XLSX?.utils;
+}
+
+function readFileAsArrayBuffer(file) {
+  if (file && typeof file.arrayBuffer === 'function') {
+    return file.arrayBuffer();
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Kunne ikke lese filen.'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function setExcelControlsEnabled(enabled) {
+  [sheetSelect, eastColumnSelect, northColumnSelect, zoneColumnSelect, processExcelBtn].forEach((el) => {
+    if (el) el.disabled = !enabled;
+  });
+}
+
 function columnLetter(index) {
-  return XLSX.utils.encode_col(index);
+  return window.XLSX.utils.encode_col(index);
 }
 
 function cellValue(sheet, row, col) {
-  return sheet[XLSX.utils.encode_cell({ r: row, c: col })]?.v ?? '';
+  return sheet[window.XLSX.utils.encode_cell({ r: row, c: col })]?.v ?? '';
 }
 
 function findHeaderRow(sheet) {
-  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+  const range = window.XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
   const maxRow = Math.min(range.e.r, range.s.r + 30);
 
   let bestRow = range.s.r;
@@ -552,7 +575,7 @@ function isZoneHeader(header) {
 
 function sheetMetadata(sheetName) {
   const sheet = workbook.Sheets[sheetName];
-  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+  const range = window.XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
   const headerRow = findHeaderRow(sheet);
   const columns = [];
 
@@ -618,12 +641,20 @@ function refreshSheetMapping() {
 
 async function loadExcelFile(file) {
   try {
+    excelFileName.textContent = file?.name || '–';
     excelBadge.textContent = 'Leser…';
     excelBadge.className = 'badge';
+    setExcelControlsEnabled(false);
+    downloadExcelBtn.disabled = true;
+    previewWrap.hidden = true;
     setExcelStatus('Leser filen…');
 
-    const data = await file.arrayBuffer();
-    workbook = XLSX.read(data, { type: 'array', cellStyles: true, cellDates: true });
+    if (!excelLibraryReady()) {
+      throw new Error('Excel-biblioteket kunne ikke lastes. Oppdater siden og prøv igjen.');
+    }
+
+    const data = await readFileAsArrayBuffer(file);
+    workbook = window.XLSX.read(data, { type: 'array', cellDates: true });
     originalFileName = file.name;
 
     if (!workbook.SheetNames.length) throw new Error('Filen inneholder ingen ark.');
@@ -636,25 +667,39 @@ async function loadExcelFile(file) {
       sheetSelect.appendChild(option);
     });
 
-    excelFileName.textContent = file.name;
-    excelMapping.hidden = false;
     excelBadge.textContent = 'Klar';
     excelBadge.className = 'badge live';
+    setExcelControlsEnabled(true);
     refreshSheetMapping();
   } catch (error) {
     console.error(error);
     workbook = null;
     activeSheetMeta = null;
-    excelMapping.hidden = true;
+    setExcelControlsEnabled(false);
     excelBadge.textContent = 'Feil';
     excelBadge.className = 'badge error';
-    setExcelStatus('Kunne ikke lese Excel-filen. Kontroller at filen er en gyldig Excel- eller CSV-fil.', 'error');
+    const message = String(error?.message || 'Ukjent feil');
+    setExcelStatus(
+      message.includes('Excel-biblioteket')
+        ? message
+        : `Kunne ikke lese filen: ${message}`,
+      'error'
+    );
   }
 }
 
 excelFileInput.addEventListener('change', () => {
   const file = excelFileInput.files?.[0];
-  if (file) loadExcelFile(file);
+  if (file) {
+    loadExcelFile(file);
+  } else {
+    workbook = null;
+    activeSheetMeta = null;
+    setExcelControlsEnabled(false);
+    excelBadge.textContent = 'Ingen fil';
+    excelBadge.className = 'badge';
+    setExcelStatus('Velg en Excel- eller CSV-fil for å starte.');
+  }
 });
 
 sheetSelect.addEventListener('change', refreshSheetMapping);
@@ -682,7 +727,7 @@ function findOrCreateOutputColumns(meta) {
 }
 
 function writeCell(sheet, row, col, value) {
-  const address = XLSX.utils.encode_cell({ r: row, c: col });
+  const address = window.XLSX.utils.encode_cell({ r: row, c: col });
   const cell = { v: value };
   if (typeof value === 'number') cell.t = 'n';
   else cell.t = 's';
@@ -816,7 +861,7 @@ async function processExcel() {
   }
 
   const endCol = Math.max(meta.range.e.c, ...Object.values(outputCols));
-  meta.sheet['!ref'] = XLSX.utils.encode_range({ s: meta.range.s, e: { r: meta.range.e.r, c: endCol } });
+  meta.sheet['!ref'] = window.XLSX.utils.encode_range({ s: meta.range.s, e: { r: meta.range.e.r, c: endCol } });
   meta.range.e.c = endCol;
 
   renderExcelPreview();
@@ -879,9 +924,17 @@ downloadExcelBtn.addEventListener('click', () => {
 
   const baseName = originalFileName.replace(/\.[^.]+$/, '') || 'koordinater';
   const outputName = `${baseName}_med_WGS84.xlsx`;
-  XLSX.writeFile(workbook, outputName, { compression: true });
+  window.XLSX.writeFile(workbook, outputName, { compression: true });
   setExcelStatus(`Resultatfilen «${outputName}» er laget.`, 'ok');
 });
+
+// Vis tydelig om Excel-motoren er klar.
+setExcelControlsEnabled(false);
+if (!excelLibraryReady()) {
+  excelBadge.textContent = 'Excel ikke lastet';
+  excelBadge.className = 'badge error';
+  setExcelStatus('Excel-funksjonen kunne ikke laste biblioteket. Prøv å oppdatere siden. Hvis feilen fortsetter, kontroller at nettleseren ikke blokkerer cdn.jsdelivr.net/cdnjs.cloudflare.com.', 'error');
+}
 
 // Valgfri delbar lenke: ?lat=..&lon=..
 const params = new URLSearchParams(window.location.search);

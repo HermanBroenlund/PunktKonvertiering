@@ -433,3 +433,13 @@ footer {
   .af-logo { width: 40px; height: 40px; }
   .map-wrap { height: 70dvh; min-height: 260px; }
 }
+
+/* Excel: knappen er alltid synlig, men deaktivert til en fil er lest inn. */
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.excel-mapping select:disabled {
+  opacity: 0.65;
+}

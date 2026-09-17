@@ -89,7 +89,8 @@ const street = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 topo.addTo(map);
 excelLayer.addTo(map);
 
-L.control.layers(
+const compactMapQuery = window.matchMedia('(max-width: 760px)');
+const layerControl = L.control.layers(
   {
     'Terrengkart': topo,
     'Satellitt': satellite,
@@ -98,8 +99,24 @@ L.control.layers(
   {
     'Excel-punkter': excelLayer
   },
-  { collapsed: false, position: 'topright' }
+  {
+    // På mobil vises kun det kompakte lag-ikonet. På PC er laglisten åpen.
+    collapsed: compactMapQuery.matches,
+    position: 'topright'
+  }
 ).addTo(map);
+
+function syncLayerControlForScreen() {
+  if (compactMapQuery.matches && typeof layerControl.collapse === 'function') {
+    layerControl.collapse();
+  } else if (!compactMapQuery.matches && typeof layerControl.expand === 'function') {
+    layerControl.expand();
+  }
+}
+
+if (typeof compactMapQuery.addEventListener === 'function') {
+  compactMapQuery.addEventListener('change', syncLayerControlForScreen);
+}
 
 L.control.scale({ metric: true, imperial: false }).addTo(map);
 
@@ -533,30 +550,56 @@ function findHeaderRow(sheet) {
   const range = window.XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
   const maxRow = Math.min(range.e.r, range.s.r + 30);
 
-  let bestRow = range.s.r;
-  let bestScore = -1;
+  let bestKnownRow = null;
+  let bestKnownScore = 0;
+  let genericHeaderRow = null;
 
   for (let row = range.s.r; row <= maxRow; row += 1) {
-    let score = 0;
+    let knownScore = 0;
     let nonEmpty = 0;
+    let textCells = 0;
+    let numericCells = 0;
+
     for (let col = range.s.c; col <= range.e.c; col += 1) {
       const raw = cellValue(sheet, row, col);
-      if (String(raw).trim()) nonEmpty += 1;
+      if (!String(raw).trim()) continue;
+      nonEmpty += 1;
+
       const h = normalizeHeader(raw);
-      if (isEastHeader(h)) score += 4;
-      if (isNorthHeader(h)) score += 4;
-      if (isZoneHeader(h)) score += 2;
+      if (isEastHeader(h)) knownScore += 4;
+      if (isNorthHeader(h)) knownScore += 4;
+      if (isZoneHeader(h)) knownScore += 2;
+
+      if (Number.isFinite(parseNumber(raw))) numericCells += 1;
+      else textCells += 1;
     }
 
-    // En vanlig overskriftsrad med flere tekstceller får en liten bonus.
-    score += Math.min(nonEmpty, 5) * 0.2;
-    if (score > bestScore) {
-      bestScore = score;
-      bestRow = row;
+    if (knownScore > bestKnownScore) {
+      bestKnownScore = knownScore;
+      bestKnownRow = row;
+    }
+
+    // Reservegjenkjenning for overskrifter med ukjente navn: raden må i hovedsak
+    // bestå av tekst, og raden under må se tydelig mer ut som data.
+    if (genericHeaderRow === null && nonEmpty >= 2 && textCells / nonEmpty >= 0.75 && row < range.e.r) {
+      let nextNonEmpty = 0;
+      let nextNumeric = 0;
+      for (let col = range.s.c; col <= range.e.c; col += 1) {
+        const nextRaw = cellValue(sheet, row + 1, col);
+        if (!String(nextRaw).trim()) continue;
+        nextNonEmpty += 1;
+        if (Number.isFinite(parseNumber(nextRaw))) nextNumeric += 1;
+      }
+      if (nextNonEmpty >= 2 && nextNumeric >= 2 && nextNumeric > numericCells) {
+        genericHeaderRow = row;
+      }
     }
   }
 
-  return bestRow;
+  // Ikke gjett at første datarad er en overskrift. Minst én tydelig E/N/sone-
+  // overskrift må finnes, ellers brukes bare den generiske teksttesten over.
+  if (bestKnownRow !== null && bestKnownScore >= 4) return bestKnownRow;
+  return genericHeaderRow;
 }
 
 function isEastHeader(header) {
@@ -573,23 +616,46 @@ function isZoneHeader(header) {
   return ['sone', 'zone', 'utm sone', 'utm zone', 'utmsone', 'utmzone'].includes(header) || header.includes('utm sone');
 }
 
+function sampleValueForColumn(sheet, col, startRow, endRow) {
+  const last = Math.min(endRow, startRow + 20);
+  for (let row = startRow; row <= last; row += 1) {
+    const raw = cellValue(sheet, row, col);
+    if (String(raw ?? '').trim() !== '') return raw;
+  }
+  return '';
+}
+
 function sheetMetadata(sheetName) {
   const sheet = workbook.Sheets[sheetName];
   const range = window.XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
   const headerRow = findHeaderRow(sheet);
+  const dataStartRow = headerRow === null ? range.s.r : headerRow + 1;
   const columns = [];
 
   for (let col = range.s.c; col <= range.e.c; col += 1) {
-    const raw = cellValue(sheet, headerRow, col);
-    const title = String(raw).trim() || `Kolonne ${columnLetter(col)} (uten overskrift)`;
+    const rawHeader = headerRow === null ? '' : cellValue(sheet, headerRow, col);
+    const sample = sampleValueForColumn(sheet, col, dataStartRow, range.e.r);
+    const sampleText = String(sample ?? '').trim();
+    const title = headerRow === null
+      ? `uten overskrift${sampleText ? ` • eksempel: ${sampleText.slice(0, 28)}` : ''}`
+      : (String(rawHeader).trim() || `uten overskrift${sampleText ? ` • eksempel: ${sampleText.slice(0, 28)}` : ''}`);
+
     columns.push({
       index: col,
       title,
-      normalized: normalizeHeader(raw)
+      normalized: normalizeHeader(rawHeader)
     });
   }
 
-  return { sheetName, sheet, range, headerRow, columns };
+  return {
+    sheetName,
+    sheet,
+    range,
+    headerRow,
+    dataStartRow,
+    syntheticHeader: false,
+    columns
+  };
 }
 
 function populateColumnSelect(select, columns, includeDefaultZone = false) {
@@ -610,10 +676,68 @@ function populateColumnSelect(select, columns, includeDefaultZone = false) {
   });
 }
 
+function coordinateColumnStats(meta, columnIndex) {
+  const maxRow = Math.min(meta.range.e.r, meta.dataStartRow + 39);
+  let nonEmpty = 0;
+  let numeric = 0;
+  let eastMatches = 0;
+  let northMatches = 0;
+  let zoneMatches = 0;
+
+  for (let row = meta.dataStartRow; row <= maxRow; row += 1) {
+    const raw = cellValue(meta.sheet, row, columnIndex);
+    if (String(raw ?? '').trim() === '') continue;
+    nonEmpty += 1;
+    const value = parseNumber(raw);
+    if (!Number.isFinite(value)) continue;
+    numeric += 1;
+
+    // Norske UTM-koordinater ligger normalt godt innenfor disse intervallene.
+    if (value >= 10000 && value <= 1000000) eastMatches += 1;
+    if (value >= 5000000 && value <= 9000000) northMatches += 1;
+    if (NORWAY_ZONES.includes(Number.parseInt(value, 10)) && Math.abs(value - Math.round(value)) < 1e-9) zoneMatches += 1;
+  }
+
+  const denom = Math.max(nonEmpty, 1);
+  return {
+    index: columnIndex,
+    nonEmpty,
+    numeric,
+    eastScore: eastMatches / denom,
+    northScore: northMatches / denom,
+    zoneScore: zoneMatches / denom
+  };
+}
+
+function inferCoordinateColumns(meta) {
+  const stats = meta.columns.map((column) => coordinateColumnStats(meta, column.index));
+
+  const north = [...stats]
+    .filter((item) => item.nonEmpty > 0 && item.northScore >= 0.6)
+    .sort((a, b) => b.northScore - a.northScore || b.numeric - a.numeric)[0] || null;
+
+  const east = [...stats]
+    .filter((item) => item.index !== north?.index && item.nonEmpty > 0 && item.eastScore >= 0.6)
+    .sort((a, b) => b.eastScore - a.eastScore || b.numeric - a.numeric)[0] || null;
+
+  const zone = [...stats]
+    .filter((item) => item.index !== east?.index && item.index !== north?.index && item.zoneScore >= 0.8)
+    .sort((a, b) => b.zoneScore - a.zoneScore)[0] || null;
+
+  return { east, north, zone };
+}
+
 function autoSelectColumns(meta) {
-  const east = meta.columns.find((column) => isEastHeader(column.normalized));
-  const north = meta.columns.find((column) => isNorthHeader(column.normalized));
-  const zone = meta.columns.find((column) => isZoneHeader(column.normalized));
+  let east = meta.columns.find((column) => isEastHeader(column.normalized));
+  let north = meta.columns.find((column) => isNorthHeader(column.normalized));
+  let zone = meta.columns.find((column) => isZoneHeader(column.normalized));
+
+  if (!east || !north) {
+    const inferred = inferCoordinateColumns(meta);
+    if (!east && inferred.east) east = meta.columns.find((column) => column.index === inferred.east.index);
+    if (!north && inferred.north) north = meta.columns.find((column) => column.index === inferred.north.index);
+    if (!zone && inferred.zone) zone = meta.columns.find((column) => column.index === inferred.zone.index);
+  }
 
   if (east) eastColumnSelect.value = String(east.index);
   if (north) northColumnSelect.value = String(north.index);
@@ -630,13 +754,20 @@ function refreshSheetMapping() {
   populateColumnSelect(zoneColumnSelect, activeSheetMeta.columns, true);
   autoSelectColumns(activeSheetMeta);
 
-  const dataRows = Math.max(0, activeSheetMeta.range.e.r - activeSheetMeta.headerRow);
-  excelSheetInfo.textContent = `${activeSheetMeta.sheetName} • overskriftsrad ${activeSheetMeta.headerRow + 1} • opptil ${dataRows} datarader`;
+  const dataRows = Math.max(0, activeSheetMeta.range.e.r - activeSheetMeta.dataStartRow + 1);
+  const headerInfo = activeSheetMeta.headerRow === null
+    ? 'ingen overskriftsrad funnet – første rad beholdes som data'
+    : `overskriftsrad ${activeSheetMeta.headerRow + 1}`;
+  excelSheetInfo.textContent = `${activeSheetMeta.sheetName} • ${headerInfo} • opptil ${dataRows} datarader`;
   processedRows = [];
   excelProcessed = false;
   downloadExcelBtn.disabled = true;
   previewWrap.hidden = true;
-  setExcelStatus('Kontroller at E- og N-kolonnene er valgt riktig. Andre kolonner påvirkes ikke.');
+  setExcelStatus(
+    activeSheetMeta.headerRow === null
+      ? 'Ingen sikker overskriftsrad ble funnet. Første rad behandles som data. Kontroller at E- og N-kolonnene er valgt riktig.'
+      : 'Kontroller at E- og N-kolonnene er valgt riktig. Andre kolonner påvirkes ikke.'
+  );
 }
 
 async function loadExcelFile(file) {
@@ -704,6 +835,62 @@ excelFileInput.addEventListener('change', () => {
 
 sheetSelect.addEventListener('change', refreshSheetMapping);
 
+function insertSyntheticHeaderRow(meta, eastCol, northCol, zoneSetting) {
+  if (meta.headerRow !== null) return;
+
+  const sheet = meta.sheet;
+  const insertAt = meta.range.s.r;
+  const oldEndRow = meta.range.e.r;
+  const zoneCol = zoneSetting === '__auto_zone__' ? null : Number.parseInt(zoneSetting, 10);
+
+  // Flytt hele det brukte området én rad ned. Vi flytter selve celleobjektene,
+  // slik at verdier, tallformat og enkel celleformatering beholdes.
+  for (let row = oldEndRow; row >= insertAt; row -= 1) {
+    for (let col = meta.range.s.c; col <= meta.range.e.c; col += 1) {
+      const from = window.XLSX.utils.encode_cell({ r: row, c: col });
+      const to = window.XLSX.utils.encode_cell({ r: row + 1, c: col });
+      if (sheet[from] !== undefined) sheet[to] = sheet[from];
+      else delete sheet[to];
+    }
+  }
+
+  for (let col = meta.range.s.c; col <= meta.range.e.c; col += 1) {
+    delete sheet[window.XLSX.utils.encode_cell({ r: insertAt, c: col })];
+  }
+
+  if (Array.isArray(sheet['!rows'])) {
+    sheet['!rows'].splice(insertAt, 0, {});
+  }
+
+  if (Array.isArray(sheet['!merges'])) {
+    sheet['!merges'] = sheet['!merges'].map((merge) => ({
+      s: { r: merge.s.r >= insertAt ? merge.s.r + 1 : merge.s.r, c: merge.s.c },
+      e: { r: merge.e.r >= insertAt ? merge.e.r + 1 : merge.e.r, c: merge.e.c }
+    }));
+  }
+
+  meta.range.e.r = oldEndRow + 1;
+  meta.headerRow = insertAt;
+  meta.dataStartRow = insertAt + 1;
+  meta.syntheticHeader = true;
+
+  // Lag tydelige, nøytrale overskrifter uten å gjette betydningen av andre kolonner.
+  for (let col = meta.range.s.c; col <= meta.range.e.c; col += 1) {
+    let header = `Original_${columnLetter(col)}`;
+    if (col === eastCol) header = 'E';
+    else if (col === northCol) header = 'N';
+    else if (Number.isInteger(zoneCol) && col === zoneCol) header = 'UTM_Sone';
+    writeCell(sheet, meta.headerRow, col, header);
+  }
+
+  sheet['!ref'] = window.XLSX.utils.encode_range({
+    s: meta.range.s,
+    e: meta.range.e
+  });
+
+  excelSheetInfo.textContent = `${meta.sheetName} • ny overskriftsrad lagt til • ${meta.range.e.r - meta.dataStartRow + 1} datarader`;
+}
+
 function findOrCreateOutputColumns(meta) {
   const headers = new Map();
   for (let col = meta.range.s.c; col <= meta.range.e.c; col += 1) {
@@ -758,6 +945,11 @@ async function processExcel() {
   }
 
   const meta = activeSheetMeta;
+
+  // Hvis filen ikke har overskriftsrad, legger vi inn en ny rad i toppen i stedet
+  // for å bruke første koordinat som overskrift. Dermed beholdes absolutt første punkt.
+  insertSyntheticHeaderRow(meta, eastCol, northCol, zoneSetting);
+
   const outputCols = findOrCreateOutputColumns(meta);
 
   writeCell(meta.sheet, meta.headerRow, outputCols.lat, OUTPUT_HEADERS.lat);
@@ -774,15 +966,17 @@ async function processExcel() {
   let converted = 0;
   let errors = 0;
   let skipped = 0;
+  let coordinateRows = 0;
   let zoneHint = lastResolvedZone;
-  const totalRows = Math.max(0, meta.range.e.r - meta.headerRow);
+  const totalRows = Math.max(0, meta.range.e.r - meta.dataStartRow + 1);
 
-  for (let row = meta.headerRow + 1; row <= meta.range.e.r; row += 1) {
+  for (let row = meta.dataStartRow; row <= meta.range.e.r; row += 1) {
     const eRaw = cellValue(meta.sheet, row, eastCol);
     const nRaw = cellValue(meta.sheet, row, northCol);
 
-    if ((row - meta.headerRow) % 10 === 0 || row === meta.headerRow + 1) {
-      setExcelStatus(`Behandler rad ${row - meta.headerRow} av ${totalRows}…`);
+    const rowNumberInData = row - meta.dataStartRow + 1;
+    if (rowNumberInData % 10 === 0 || row === meta.dataStartRow) {
+      setExcelStatus(`Behandler rad ${rowNumberInData} av ${totalRows}…`);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
 
@@ -795,6 +989,7 @@ async function processExcel() {
       continue;
     }
 
+    coordinateRows += 1;
     const easting = parseNumber(eRaw);
     const northing = parseNumber(nRaw);
     let zone = null;
@@ -874,11 +1069,17 @@ async function processExcel() {
     if (bounds.isValid()) map.fitBounds(bounds.pad(0.15), { maxZoom: 15 });
   }
 
-  excelBadge.textContent = `${converted} OK`;
+  excelBadge.textContent = `${converted}/${coordinateRows} OK`;
   excelBadge.className = errors ? 'badge' : 'badge live';
+
+  const allPointsOk = coordinateRows > 0 && errors === 0 && converted === coordinateRows;
+  const integrityText = allPointsOk
+    ? `Alle ${converted} punkt${converted === 1 ? '' : 'er'} ble konvertert og tatt med i resultatfilen og kartet.`
+    : `${converted} av ${coordinateRows} rader med E/N ble konvertert. ${errors} rad${errors === 1 ? '' : 'er'} har feilstatus i resultatfilen.`;
+
   setExcelStatus(
-    `${converted} rad${converted === 1 ? '' : 'er'} konvertert. ${errors} rad${errors === 1 ? '' : 'er'} med feil. ${skipped} tomme rad${skipped === 1 ? '' : 'er'} hoppet over. Originale kolonner er beholdt.`,
-    errors ? '' : 'ok'
+    `${integrityText} ${skipped} tomme rad${skipped === 1 ? '' : 'er'} hoppet over. Alle originale rader og øvrige kolonner er beholdt.`,
+    allPointsOk ? 'ok' : ''
   );
 }
 
